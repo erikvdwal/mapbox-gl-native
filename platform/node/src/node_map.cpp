@@ -45,9 +45,11 @@ static const char* releasedMessage() {
 NodeBackend::NodeBackend()
     : HeadlessBackend(sharedDisplay()) {}
 
-void NodeBackend::onDidFailLoadingMap(std::exception_ptr error) {
-    std::rethrow_exception(error);
-}
+class NodeMapObserver : public mbgl::MapObserver {
+    void onDidFailLoadingMap(std::exception_ptr error) override {
+        std::rethrow_exception(error);
+    }
+};
 
 void NodeMap::Init(v8::Local<v8::Object> target) {
     v8::Local<v8::FunctionTemplate> tpl = Nan::New<v8::FunctionTemplate>(New);
@@ -530,7 +532,7 @@ void NodeMap::Cancel(const Nan::FunctionCallbackInfo<v8::Value>& info) {
 void NodeMap::cancel() {
     auto style = map->getStyle().getJSON();
 
-    map = std::make_unique<mbgl::Map>(backend, mbgl::Size{ 256, 256 },
+    map = std::make_unique<mbgl::Map>(backend, *mapObserver, mbgl::Size{ 256, 256 },
             pixelRatio, *this, threadpool, mbgl::MapMode::Still);
 
     // FIXME: Reload the style after recreating the map. We need to find
@@ -982,7 +984,9 @@ NodeMap::NodeMap(v8::Local<v8::Object> options)
                            ->NumberValue()
                      : 1.0;
       }()),
+      mapObserver(std::make_unique<NodeMapObserver>()),
       map(std::make_unique<mbgl::Map>(backend,
+                                      *mapObserver,
                                       mbgl::Size{ 256, 256 },
                                       pixelRatio,
                                       *this,

@@ -20,7 +20,6 @@ namespace node_mbgl {
 class NodeBackend : public mbgl::HeadlessBackend {
 public:
     NodeBackend();
-    void onDidFailLoadingMap(std::exception_ptr) final;
 };
 
 class NodeMap : public Nan::ObjectWrap,
@@ -71,6 +70,7 @@ public:
     NodeBackend backend;
     std::unique_ptr<mbgl::OffscreenView> view;
     NodeThreadPool threadpool;
+    std::unique_ptr<mbgl::MapObserver> mapObserver;
     std::unique_ptr<mbgl::Map> map;
 
     std::exception_ptr error;
