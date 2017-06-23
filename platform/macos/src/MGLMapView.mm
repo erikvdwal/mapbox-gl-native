@@ -32,6 +32,8 @@
 #import <mbgl/map/backend.hpp>
 #import <mbgl/map/backend_scope.hpp>
 #import <mbgl/style/image.hpp>
+#import <mbgl/renderer/renderer.hpp>
+#import <mbgl/renderer/renderer_frontend.hpp>
 #import <mbgl/storage/default_file_source.hpp>
 #import <mbgl/storage/network_status.hpp>
 #import <mbgl/math/wrap.hpp>
@@ -61,6 +63,7 @@
 #import <OpenGL/gl.h>
 
 class MGLMapViewImpl;
+class MGLRenderFrontend;
 class MGLAnnotationContext;
 
 /// Distance from the edge of the view to ornament views (logo, attribution, etc.).
@@ -155,6 +158,7 @@ public:
     /// Cross-platform map view controller.
     mbgl::Map *_mbglMap;
     MGLMapViewImpl *_mbglView;
+    std::unique_ptr<MGLRenderFrontend> _rendererFrontend;
     std::shared_ptr<mbgl::ThreadPool> _mbglThreadPool;
 
     NSPanGestureRecognizer *_panGestureRecognizer;
@@ -270,7 +274,10 @@ public:
     mbgl::DefaultFileSource* mbglFileSource = [MGLOfflineStorage sharedOfflineStorage].mbglFileSource;
 
     _mbglThreadPool = mbgl::sharedThreadPool();
-    _mbglMap = new mbgl::Map(*_mbglView, *_mbglView, self.size, [NSScreen mainScreen].backingScaleFactor, *mbglFileSource, *_mbglThreadPool, mbgl::MapMode::Continuous, mbgl::GLContextMode::Unique, mbgl::ConstrainMode::None, mbgl::ViewportMode::Default);
+
+    auto renderer = std::make_unique<mbgl::Renderer>(*_mbglView, [NSScreen mainScreen].backingScaleFactor, *mbglFileSource, *_mbglThreadPool, mbgl::MapMode::Continuous, mbgl::GLContextMode::Unique);
+    _rendererFrontend = std::make_unique<MGLRenderFrontend>(std::move(renderer), self, _mbglView);
+    _mbglMap = new mbgl::Map(*_rendererFrontend, *_mbglView, self.size, [NSScreen mainScreen].backingScaleFactor, *mbglFileSource, *_mbglThreadPool, mbgl::MapMode::Continuous, mbgl::ConstrainMode::None, mbgl::ViewportMode::Default);
 
     // Install the OpenGL layer. Interface Builder’s synchronous drawing means
     // we can’t display a map, so don’t even bother to have a map layer.
@@ -769,11 +776,8 @@ public:
 }
 
 - (void)renderSync {
-    if (!self.dormant) {
-        // The OpenGL implementation automatically enables the OpenGL context for us.
-        mbgl::BackendScope scope { *_mbglView, mbgl::BackendScope::ScopeType::Implicit };
-
-        _mbglMap->render(*_mbglView);
+    if (!self.dormant && _rendererFrontend) {
+        _rendererFrontend->render();
 
         if (_isPrinting) {
             _isPrinting = NO;
@@ -2758,8 +2762,7 @@ public:
 /// Adapter responsible for bridging calls from mbgl to MGLMapView and Cocoa.
 class MGLMapViewImpl : public mbgl::View, public mbgl::Backend, public mbgl::MapObserver {
 public:
-    MGLMapViewImpl(MGLMapView *nativeView_)
-        : nativeView(nativeView_) {}
+    MGLMapViewImpl(MGLMapView *nativeView_) : nativeView(nativeView_) {}
 
     void onCameraWillChange(mbgl::MapObserver::CameraChangeMode mode) override {
         bool animated = mode == mbgl::MapObserver::CameraChangeMode::Animated;
@@ -2850,10 +2853,6 @@ public:
         return reinterpret_cast<mbgl::gl::ProcAddress>(symbol);
     }
 
-    void invalidate() override {
-        [nativeView setNeedsGLDisplay];
-    }
-
     void activate() override {
         if (activationCount++) {
             return;
@@ -2876,6 +2875,10 @@ public:
         assumeFramebufferBinding(fbo);
         assumeViewport(0, 0, nativeView.framebufferSize);
     }
+    
+    mbgl::BackendScope::ScopeType getScopeType() const override {
+        return mbgl::BackendScope::ScopeType::Implicit;
+    }
 
     void bind() override {
         setFramebufferBinding(fbo);
@@ -2895,6 +2898,61 @@ private:
 
     /// The reference counted count of activation calls
     NSUInteger activationCount = 0;
+};
+
+// Render frontend passed to the Map to facilitate rendering
+class MGLRenderFrontend : public mbgl::RendererFrontend
+{
+public:
+    MGLRenderFrontend(std::unique_ptr<mbgl::Renderer> renderer_, MGLMapView* nativeView_, MGLMapViewImpl* mbglView_)
+        : renderer(std::move(renderer_))
+        , nativeView(nativeView_)
+        , mbglView(mbglView_) {
+    }
+    
+    ~MGLRenderFrontend() {
+        reset();
+    }
+    
+    void reset() override {
+        if (renderer) {
+            renderer.reset();
+        }
+    }
+    
+    void update(std::shared_ptr<mbgl::UpdateParameters> updateParameters_) override {
+        updateParameters = std::move(updateParameters_);
+        [nativeView setNeedsGLDisplay];
+    };
+    
+    std::vector<mbgl::Feature> queryRenderedFeatures(mbgl::ScreenLineString geometry, mbgl::RenderedQueryOptions options) const override {
+        if (!renderer)  return {};
+        return renderer->queryRenderedFeatures(std::move(geometry), std::move(options));
+    };
+    
+    std::vector<mbgl::Feature> querySourceFeatures(std::string sourceID, mbgl::SourceQueryOptions options) const override  {
+        if (!renderer)  return {};
+        return renderer->querySourceFeatures(std::move(sourceID), std::move(options));
+        
+    };
+    
+    void setObserver(mbgl::RendererObserver& observer) override {
+        if (!renderer) return;
+        renderer->setObserver(&observer);
+    };
+    
+    void render() {
+        if (!renderer || !updateParameters) return;
+        
+        auto params = std::move(updateParameters);
+        renderer->render(*mbglView, *params);
+    }
+    
+private:
+    __weak MGLMapView *nativeView = nullptr;
+    MGLMapViewImpl *mbglView = nullptr;
+    std::unique_ptr<mbgl::Renderer> renderer;
+    std::shared_ptr<mbgl::UpdateParameters> updateParameters;
 };
 
 @end
