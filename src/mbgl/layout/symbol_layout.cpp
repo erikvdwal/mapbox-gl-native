@@ -504,14 +504,13 @@ std::unique_ptr<SymbolBucket> SymbolLayout::place(CollisionTile& collisionTile) 
             collisionTile.insertFeature(symbolInstance.textCollisionFeature, glyphScale, layout.get<TextIgnorePlacement>());
             if (glyphScale < collisionTile.maxScale) {
                 const Range<float> sizeData = bucket->textSizeBinder->getVertexSizeData(feature);
-                PlacedSymbol placedSymbol(symbolInstance.anchor.point, symbolInstance.anchor.segment, sizeData.min, sizeData.max,
+                bucket->text.placedSymbols.emplace_back(symbolInstance.anchor.point, symbolInstance.anchor.segment, sizeData.min, sizeData.max,
                         symbolInstance.textOffset, placementZoom, false, symbolInstance.line);
                 for (const auto& symbol : symbolInstance.glyphQuads) {
                     addSymbol(
                         bucket->text, sizeData, symbol, placementZoom,
-                        keepUpright, textPlacement, collisionTile.config.angle, symbolInstance.writingModes, symbolInstance.anchor, placedSymbol);
+                        keepUpright, textPlacement, collisionTile.config.angle, symbolInstance.writingModes, symbolInstance.anchor, bucket->text.placedSymbols.back());
                 }
-                bucket->text.placedSymbols.emplace_back(std::move(placedSymbol));
             }
         }
 
@@ -520,12 +519,11 @@ std::unique_ptr<SymbolBucket> SymbolLayout::place(CollisionTile& collisionTile) 
             collisionTile.insertFeature(symbolInstance.iconCollisionFeature, iconScale, layout.get<IconIgnorePlacement>());
             if (iconScale < collisionTile.maxScale && symbolInstance.iconQuad) {
                 const Range<float> sizeData = bucket->iconSizeBinder->getVertexSizeData(feature);
-                PlacedSymbol placedSymbol(symbolInstance.anchor.point, symbolInstance.anchor.segment, sizeData.min, sizeData.max,
+                bucket->icon.placedSymbols.emplace_back(symbolInstance.anchor.point, symbolInstance.anchor.segment, sizeData.min, sizeData.max,
                         symbolInstance.iconOffset, placementZoom, false, symbolInstance.line);
                 addSymbol(
                     bucket->icon, sizeData, *symbolInstance.iconQuad, placementZoom,
-                    keepUpright, iconPlacement, collisionTile.config.angle, symbolInstance.writingModes, symbolInstance.anchor, placedSymbol);
-                bucket->icon.placedSymbols.emplace_back(std::move(placedSymbol));
+                    keepUpright, iconPlacement, collisionTile.config.angle, symbolInstance.writingModes, symbolInstance.anchor, bucket->icon.placedSymbols.back());
             }
         }
         
