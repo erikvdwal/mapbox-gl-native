@@ -1,14 +1,20 @@
 package com.mapbox.mapboxsdk.maps;
 
+import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.PointF;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.util.LongSparseArray;
+import android.view.View;
+import android.widget.Toast;
 
 import com.mapbox.mapboxsdk.annotations.Annotation;
 import com.mapbox.mapboxsdk.annotations.BaseMarkerOptions;
 import com.mapbox.mapboxsdk.annotations.BaseMarkerViewOptions;
+import com.mapbox.mapboxsdk.annotations.Icon;
 import com.mapbox.mapboxsdk.annotations.Marker;
 import com.mapbox.mapboxsdk.annotations.MarkerView;
 import com.mapbox.mapboxsdk.annotations.MarkerViewManager;
@@ -20,6 +26,8 @@ import com.mapbox.mapboxsdk.annotations.PolylineOptions;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+
+import timber.log.Timber;
 
 /**
  * Responsible for managing and tracking state of Annotations linked to Map. All events related to
@@ -330,82 +338,105 @@ class AnnotationManager {
   //
 
   boolean onTap(PointF tapPoint, float screenDensity) {
-    float toleranceSides = 4 * screenDensity;
-    float toleranceTopBottom = 10 * screenDensity;
     boolean handledDefaultClick = false;
 
-    RectF tapRect = new RectF(tapPoint.x - iconManager.getAverageIconWidth() / 2 - toleranceSides,
-      tapPoint.y - iconManager.getAverageIconHeight() / 2 - toleranceTopBottom,
-      tapPoint.x + iconManager.getAverageIconWidth() / 2 + toleranceSides,
-      tapPoint.y + iconManager.getAverageIconHeight() / 2 + toleranceTopBottom);
+    Projection projection = mapboxMap.getProjection();
+    float touchTargetSize = screenDensity * 24.0f;
+    final RectF tapRect = new RectF(tapPoint.x - touchTargetSize,
+      tapPoint.y - touchTargetSize,
+      tapPoint.x + touchTargetSize,
+      tapPoint.y + touchTargetSize);
 
-    List<Marker> nearbyMarkers = getMarkersInRect(tapRect);
     long newSelectedMarkerId = -1;
 
-    // find a Marker that isn't selected yet
-    if (nearbyMarkers.size() > 0) {
-      Collections.sort(nearbyMarkers);
-      for (Marker nearbyMarker : nearbyMarkers) {
-        boolean found = false;
-        for (Marker selectedMarker : selectedMarkers) {
-          if (selectedMarker.equals(nearbyMarker)) {
-            found = true;
+    View view;
+    Icon icon;
+    Bitmap bitmap;
+    PointF markerLocation;
+    Rect hitRectView = new Rect();
+    RectF hitRectIcon = new RectF();
+    MarkerView markerView;
+
+    RectF higestHitUnion = new RectF();
+
+    List<Marker> markers = getMarkersInRect(tapRect);
+    Timber.e("Markers found %s ", markers.size());
+    if (!markers.isEmpty()) {
+      for (Marker marker : markers) {
+        if (marker instanceof MarkerView) {
+          markerView = (MarkerView) marker;
+          view = markerViewManager.getView(markerView);
+          if (view != null) {
+            view.getHitRect(hitRectView);
+            hitRectIcon = new RectF(hitRectView);
+            if (hitRectIcon.contains(tapPoint.x, tapPoint.y)) {
+              hitRectIcon.intersect(tapRect);
+              Timber.e("union %s, w x h  %s x %s", marker.getTitle(), hitRectIcon.width(), hitRectIcon.height());
+              if (hitRectIcon.width() * hitRectIcon.height() > higestHitUnion.width() * higestHitUnion.height()) {
+                newSelectedMarkerId = markerView.getId();
+                Toast.makeText(mapView.getContext(), "CLICK!", Toast.LENGTH_SHORT).show();
+              }
+            }
           }
-        }
-        if (!found) {
-          newSelectedMarkerId = nearbyMarker.getId();
-          break;
+        } else {
+          icon = marker.getIcon();
+          bitmap = icon.getBitmap();
+          markerLocation = projection.toScreenLocation(marker.getPosition());
+          hitRectIcon.set(0, 0, bitmap.getWidth(), bitmap.getHeight());
+          hitRectIcon.offsetTo(markerLocation.x - bitmap.getWidth() / 2, markerLocation.y - bitmap.getHeight() / 2);
+          if (hitRectIcon.contains(tapPoint.x, tapPoint.y)) {
+            hitRectIcon.intersect(tapRect);
+            Timber.e("union %s, w x h  %s x %s", marker.getTitle(), hitRectIcon.width(), hitRectIcon.height());
+            if (hitRectIcon.width() * hitRectIcon.height() > higestHitUnion.width() * higestHitUnion.height()) {
+              higestHitUnion = new RectF(hitRectIcon);
+              newSelectedMarkerId = marker.getId();
+              Toast.makeText(mapView.getContext(), "CLICK!", Toast.LENGTH_SHORT).show();
+            }
+          } else {
+            Timber.e("not hitting for %s", marker.getTitle());
+          }
         }
       }
     }
 
     // if unselected marker found
     if (newSelectedMarkerId >= 0) {
-      List<Annotation> annotations = getAnnotations();
-      int count = annotations.size();
-      for (int i = 0; i < count; i++) {
-        Annotation annotation = annotations.get(i);
-        if (annotation instanceof Marker) {
-          if (annotation.getId() == newSelectedMarkerId) {
-            Marker marker = (Marker) annotation;
+      Marker marker = (Marker) getAnnotation(newSelectedMarkerId);
 
-            if (marker instanceof MarkerView) {
-              handledDefaultClick = markerViewManager.onClickMarkerView((MarkerView) marker);
-            } else {
-              if (onMarkerClickListener != null) {
-                // end developer has provided a custom click listener
-                handledDefaultClick = onMarkerClickListener.onMarkerClick(marker);
-              }
-            }
-
-            if (!handledDefaultClick) {
-              // only select marker if user didn't handle the click event themselves
-              selectMarker(marker);
-            }
-
-            return true;
-          }
+      if (marker instanceof MarkerView) {
+        handledDefaultClick = markerViewManager.onClickMarkerView((MarkerView) marker);
+      } else {
+        if (onMarkerClickListener != null) {
+          // end developer has provided a custom click listener
+          handledDefaultClick = onMarkerClickListener.onMarkerClick(marker);
         }
       }
-    } else if (nearbyMarkers.size() > 0) {
-      // we didn't find an unselected marker, check if we can close an already open markers
-      for (Marker nearbyMarker : nearbyMarkers) {
-        for (Marker selectedMarker : selectedMarkers) {
-          if (nearbyMarker.equals(selectedMarker)) {
-            if (nearbyMarker instanceof MarkerView) {
-              handledDefaultClick = markerViewManager.onClickMarkerView((MarkerView) nearbyMarker);
-            } else if (onMarkerClickListener != null) {
-              handledDefaultClick = onMarkerClickListener.onMarkerClick(nearbyMarker);
-            }
 
-            if (!handledDefaultClick) {
-              // only deselect marker if user didn't handle the click event themselves
-              deselectMarker(nearbyMarker);
-            }
-            return true;
-          }
-        }
+      if (!handledDefaultClick) {
+        // only select marker if user didn't handle the click event themselves
+        selectMarker(marker);
       }
+
+      return true;
+//    } else if (markers.size() > 0) {
+//      // we didn't find an unselected marker, check if we can close an already open markers
+//      for (Marker nearbyMarker : markers) {
+//        for (Marker selectedMarker : selectedMarkers) {
+//          if (nearbyMarker.equals(selectedMarker)) {
+//            if (nearbyMarker instanceof MarkerView) {
+//              handledDefaultClick = markerViewManager.onClickMarkerView((MarkerView) nearbyMarker);
+//            } else if (onMarkerClickListener != null) {
+//              handledDefaultClick = onMarkerClickListener.onMarkerClick(nearbyMarker);
+//            }
+//
+//            if (!handledDefaultClick) {
+//              // only deselect marker if user didn't handle the click event themselves
+//              deselectMarker(nearbyMarker);
+//            }
+//            return true;
+//          }
+//        }
+//      }
     }
     return false;
   }
